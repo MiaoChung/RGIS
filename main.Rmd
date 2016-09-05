@@ -1,0 +1,505 @@
+---
+title: "用 R 來玩空間分析："
+author: "Miao Chien"
+date: "2016年9月3日"
+output: html_document
+---
+本文目錄（點擊可跳轉）
+
+[TOC]
+
+---
+
+```{r, message=FALSE}
+library(magrittr)
+library(data.table)
+```
+# 1. 基本地圖資料：套件 sp
+套件 sp 提供了空間資料的 classes 和 methods，讓空間資料可以呈現 points 、 lines 、 polygons 和 grids 的特性
+
+## 1-1. 空間資料的資料結構
+![point](https://dl.dropboxusercontent.com/u/34850909/Blogger/RGIS/point.png)
+![lines and polygons](https://dl.dropboxusercontent.com/u/34850909/Blogger/RGIS/line_polygon.png)
+![grid](https://dl.dropboxusercontent.com/u/34850909/Blogger/RGIS/grid.png)
+
+# 2. 基本地圖資料處理：套件rgdal
+[Geospatial Data Abstraction Library(GDAL)](http://www.gdal.org/) 是由 Open Source Geospatial Fundation 所開發與維護的套件，而 [rgdal](http://www.rdocumentation.org/packages/rgdal/versions/1.1-10) 正是將其與 R 綁在一起的 R 語言套件。
+
+## 2-1. 載入資料
+```{r, message=FALSE}
+setwd("~/Dropbox/practice/RGIS")
+library(rgdal)
+```
+
+### 2-1-1. 載入經緯度資料文件並繪製地圖
+```{r}
+TPE = read.table("data/TWN/tpedata.csv", header=TRUE, sep=",")
+XCOOR = TPE$X
+YCOOR = TPE$Y
+
+#設定參考坐標系統
+proj <- CRS("+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=aust_SA +units=m +no_defs")
+```
+利用 sp::SpatialPointsDataFrame 函式，將資料轉為可做進一步空間分析的 SpatialPointsDataFrame 資料格式
+```{r}
+data.sp <- SpatialPointsDataFrame(coords=cbind(x=XCOOR,y=YCOOR), data=TPE, proj4string=proj)
+# 看一下 data.sp 的 structure 長什麼樣子
+data.sp %>% str
+```
+畫成地圖來看看
+```{r}
+plot(data.sp,pch=1, col="blue")
+```
+
+### 2-1-2. 載入 shp 地圖資料
+地圖資料包含有數個檔案，以範例圖檔 country 為例，圖檔資料夾包括 country.dbf 、 country.prj 、 country.shp 和 country.shx，因此在讀入檔案時要先指向資料路徑，在 layer 參數中寫入圖檔的名字
+```{r}
+World <- readOGR(dsn = "data/World", layer = "country")
+WorldCity <- readOGR(dsn = "data/World", layer = "CITIES")
+
+# 看一下他們的 structure 長什麼樣子，因為結構龐大，所以看到第二層就好
+World %>% str(max.level=2)
+WorldCity %>% str(max.level=2)
+```
+可以看到 World 的資料格式是 SpatialPolygonsDataFrame
+而 WorldCity 則是 SpatialPointsDataFrame
+```{r}
+#看一下 圖檔的資料概況
+summary(World)
+summary(WorldCity)
+```
+
+## 2-2. 參考坐標系統（Coordinate Reference Systems）
+在網站 [Spatial Reference](http://spatialreference.org/) 中，可以查到各種座標系統的數學公式，且為了各種地圖平台使用方便，包括了諸多不同格式，非常方便。
+
+以台灣慣用的平面座標系統 [TWD97-TM2](http://spatialreference.org/ref/sr-org/116/) 為例， sp 套件中處理座標系統的函式 CRS 必須使用 proj4 格式
+![](https://dl.dropboxusercontent.com/u/34850909/Blogger/RGIS/3.png)
+點選之後可以看到 TWD97 座標系統的公式是：
+
+`+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=GRS80 +units=m +no_defs`
+
+- `proj = tmerc` 
+投影方法為橫麥卡托
+
+- `lon_0 = 121` 
+以經度 121 為地圖中央線
+
+- `k = 0.9999` 中央經線尺度放大倍數為0.9999
+中央經線與圓柱面相切密合，所以尺度為 1 會造成圖面其它地方被放大。為讓尺度變化較為均勻，於是將投影座標乘以某一常數，讓中央經線的尺度略小於1，逐漸往兩側放大，到投影帶中間某一部分尺度約為 1，投影帶邊緣則略大於 1，這個乘常數，稱做「中央經線尺度」
+
+- `x_0 = 250000`  橫座標平移量為250000
+為避免讓中央經線西側座標出現負數，而將投影座標加一個常數，即為「橫座標平移量」。
+
+- `ellps = GRS80`  橢球參數使用橢球體 GRS80
+地球真實形狀其實不是正圓，也不是完美的橢圓，而是為赤道地帶略為膨脹、兩極地區略成扁平接近，因此參考橢球體即為最接近地球真實外型的規則幾何形狀。而 GRS80 是 1980 年國際大地測量學與地球物理學協會（International Union of Geodesy and Geophysics，簡稱為IUGG）公布之參考橢球體（GRS80），其橢球參數為：
+長半徑 a = 6378137 公尺，扁率 f = 1/298.257222101
+
+關於座標系統，是一個複雜的故事了，有空再來發一篇專文。
+
+### 2-2-1. 查看並修改投影參數
+我們可以修改參考坐標系統的內容。以下舉例：
+
+```{r}
+World@proj4string 
+
+# Robinson projection
+wrld.rob <- spTransform(World, CRS("+proj=robin")) 
+plot(wrld.rob)
+
+# conical equidistant projection
+wrld.eqdc <- spTransform(World, CRS("+proj=eqdc +lat_0=0 +lon_0=0 +lat_1=90 +lat_2=90 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"))
+plot(wrld.eqdc)
+
+# Azimuthal Equidistant projection
+wrld.aeqd <- spTransform(World, CRS("+proj=aeqd +lat_0=-90 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"))
+plot(wrld.aeqd)
+```
+
+# 3. 繪製面量圖：套件 GISTools
+[GISTools](https://cran.r-project.org/web/packages/GISTools/GISTools.pdf) 提供許多協助繪製面量圖的工具
+```{r, message=FALSE, warning=FALSE}
+library(GISTools)
+```
+
+## 3-1. 檢視地圖資料的屬性表格
+```{r}
+# @data 可以看到地圖的屬性表格
+World@data %>% head
+# 現在要針對屬性資料中的人口密度 POP_CNTRY 欄位來做面量圖
+wrld.pop <- World@data$POP_CNTRY
+# 處理錯誤資料
+wrld.pop[which(wrld.pop==0)]=NA
+wrld.pop[which(wrld.pop==-99999)]=NA
+wrld.pop %<>% na.omit
+```
+
+## 3-2. 資料處理
+### 3-2-1. Select by Attributes
+這邊應用 magrittr 和 data.table 套件做資料選取，
+當然也可以用更傳統的方式來做選取
+```{r}
+# 讀取台灣地圖資料
+TWN <- readOGR(dsn = "data/TWN", layer = "Townships", encoding="big5")
+TWN@data %<>% as.data.table 
+plot(TWN)
+# 選取 6 個直轄市各區，面積大於 90 平方公里的區
+sel1 = TWN@data %>% 
+  .[,.I[County=="臺北市" | County=="新北市" | County=="桃園市" | County=="臺中市" | County=="臺南市" | County=="高雄市"] ]
+sel2 = TWN@data %>% .[,.I[Area>90]]
+plot(TWN[intersect(sel1, sel2),] ,col="red", add=TRUE)
+TWN[intersect(sel1, sel2),]@data
+```
+
+### 3-2-2. Select by Locations
+```{r}
+Flood <- readOGR(dsn = "data/TWN", layer = "flood50", encoding="big5")
+Schools <- readOGR(dsn = "data/TWN", layer = "tpecity_school", encoding="big5")
+
+# 先確保兩圖層的投影參數一樣
+Flood@proj4string = CRS("+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=aust_SA +units=m +no_defs")
+
+Schools@proj4string = CRS("+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=aust_SA +units=m +no_defs")
+# 投影參數相同才能進行選取
+Schools.Flood = Schools[Flood,] 
+
+plot(Flood, col='cyan')
+plot(Schools, col='yellow', pch=21, add=TRUE) 
+plot(Schools.Flood, col='red', pch=4, add=TRUE) 
+# 有哪些學校位處淹水區域？
+(Schools.Flood@data)
+# 總共會影響多少學生？
+sum(Schools.Flood@data$STUDENTS)
+
+```
+其中繪圖基本參數設定可參考此[連結](http://www.statmethods.net/advgraphs/parameters.html)
+
+### 3-2-3. Join Attributes
+有人口資料 .csv 文件檔案，想要根據地區代號「unicode」，
+和台灣地圖屬性資料中的地區代號「UNI_ID」互相 join 在一起
+```{r}
+# 讀入人口資料 csv 檔案
+Popn<-read.table("data/TWN/Townships_PopStat.csv", header=TRUE, sep=",") %>% data.table
+
+head(Popn)
+head(TWN@data)
+
+# 要Join 之前，須確保要 join 的欄位名稱相同、型態也相同
+# 這邊透過 data.frame 來修改欄位名稱與轉換型態
+# 但 dplyr::left_join 只能使用 data frame 資料格式，所以還要轉回來
+TWN@data %<>% .[,.(UNI_ID=UNI_ID %>% as.character,
+                  Town, County, Area, Code)] %>% as.data.frame
+Popn %<>% .[,.(UNI_ID=unicode %>% as.character,
+               towncode, Male, Female, Age25, Age44, Age54, 
+               Age64, Age.L65, Popn)] %>% as.data.frame
+TWN@data<- dplyr::left_join(TWN@data, Popn)
+TWN@data %>% head
+```
+### 3-2-4. Spatial Join
+計算各台灣鄉鎮（Polygon）中所擁有的景點（Point）數量
+![](https://dl.dropboxusercontent.com/u/34850909/Blogger/RGIS/1.png)
+```{r}
+Tour <- readOGR(dsn = "data/TWN", layer = "TWN_Tour")
+Tour@proj4string = proj
+# selecting pts over polygon
+Tour <- Tour[TWN, ] 
+
+# 計算總數
+# 這邊使用的函式 aggregate 是由 sp 套件所提供，專門處理 spatil objects
+# aggregate 函式中所填入的 FUN 可以是計算個數的 length，也可以填入 mean, sd, max, min....或者自訂 function。
+Tour_agg<-aggregate(x = Tour["Mark_ID"], by = TWN, FUN = length)  
+summary(Tour_agg@data$Mark_ID)
+TWN$Tour_Count <- Tour_agg$Mark_ID
+head(TWN@data) 
+# 處理 NA 值
+sel = TWN@data %>% data.table %>% .[,.I[is.na(Tour_Count)]] 
+TWN@data[sel,]$Tour_Count = 0
+TWN@data %>% head
+
+```
+
+### 3-2-5. Export to SHP
+使用 rgdal 套件提供的 **writeOGR** 函式將剛才做出來的圖層存成 ESRI Shapefile 格式。
+dsn 是資料夾路徑， layer 則填入圖檔名稱
+```{r}
+writeOGR(TWN, dsn="data/output", layer="New_TWN", driver="ESRI Shapefile")
+```
+
+
+## 3-3. 繪製面量圖
+### 3-3-1. 繪製面量圖與新增 legend、指北針與比例尺
+新增 legend 之前要先設定 legend 要放在地圖的哪個位置，
+執行 ``locator(1)`` 指令後點選一下剛才匯出的地圖，
+會在 Console 中顯示剛才滑鼠點選的圖片 x 、 y 位置，
+使用這個位置就可以指定 legend 和 指北針的位置
+```{r}
+PDen = TWN$Popn/TWN$Area 
+# locator(1)
+# GISTools 提供的 auto.shading 函式可以將數值切成指定的分位數
+shades <- auto.shading(PDen, cutter = quantileCuts, 
+             n = 5, cols = brewer.pal(5, "RdBu"))
+# 看一下 shades 的 structure ，可以看到其中已定義了 colors
+shades %>% str
+# 使用 choropleth 函式，讀入剛才設定的分層 shades 就可以畫出地圖
+choropleth(TWN, PDen, main="Taiwan Population Density")
+
+choro.legend(343556.7,2590112, shades,cex=0.6, 
+             fmt="%4.1f",title='Population Density (/km2)')
+north.arrow(357257.5, 2644915, "N", len=8000, col="light gray")
+map.scale(35288.13,2482789,100000,"100 km", 1, subdiv=1, tcol='black',scol='gray', sfcol='black')
+
+```
+
+### 3-3-2. 資料分級方法
+在地圖學中，面量圖的資料如何分級是一門深奧的學問，
+如果沒有根據資料的狀況做適當的分組，
+在地圖著色之後可能會因為視覺效果影響，造成閱讀者判斷錯誤。
+
+基本上有以下幾種分組方法： 
+Defined Interval, Equal Interval, Quantile, Standard Deviation 和 Natural Break (Jenks)
+
+我們可以透過 classInt 套件所提供的工具 **classIntervals** 來取得這些分級的結果
+
+#### 3-3-2-1. Defined Interval
+自定義分級。例如 0 至 100 的數據，
+定義 10 為間隔，那麼斷點則為 10、20、......、100，
+分類數由間隔大小決定
+```{r}
+library(classInt)
+interval.DI = PDen %>% classIntervals(., 4, style="fixed",
+                        fixedBreaks=c(0, 1000, 1500,2000 ,2557))
+
+q <- cut(PDen, breaks= interval.DI$brks, include.lowest=T)
+my_color = brewer.pal(9, "YlOrRd")[c(1,3,6,9)]
+
+clr <- as.character(factor(q, labels = my_color))
+plot(TWN, col = clr)
+
+lenTEXT = 
+c(paste0("<", interval.DI$brks[2]),    paste0(interval.DI$brks[2],"-",interval.DI$brks[3]),
+paste0(interval.DI$brks[3],"-",interval.DI$brks[4]),  
+paste0(interval.DI$brks[4],"-",interval.DI$brks[5]))
+
+legend(legend = paste0(lenTEXT), fill = my_color, title="Pop Density", "topright")
+```
+
+
+#### 3-3-2-2. Equal Interval
+等距分級。固定組數，每組跨距相同。
+例如 0～100 的數據，指定其分為 4 級，則間隔為 25
+```{r}
+interval.EI = PDen %>% classIntervals(., 4, style="equal")
+
+q <- cut(PDen, breaks= interval.EI$brks, include.lowest=T)
+clr <- as.character(factor(q, labels = my_color))
+plot(TWN, col = clr)
+
+interval.EI$brks %<>% round(digits = 1)
+lenTEXT = 
+c(paste0("<", interval.EI$brks[2]),    paste0(interval.EI$brks[2],"-",interval.EI$brks[3]),
+paste0(interval.EI$brks[3],"-",interval.EI$brks[4]),  
+paste0(interval.EI$brks[4],"-",interval.EI$brks[5]))
+
+legend(legend = paste0(lenTEXT), fill = my_color, title="Pop Density", "topright")
+```
+
+
+#### 3-3-2-3. Quantile
+Quantile 也就是前述 auto.shading 所提供的方法。
+Quantile 分級適合用於線性分佈的資料。
+但它不考慮數值大小，很可能將兩個大小相近的值分到不同的類別中，
+也可能一樣的數據被分在不同的級距中。
+在 Quantile 分級方法中，每一級距中的數量是一樣的
+```{r}
+# 這邊也一樣用 classIntervals 示範一次 Quantile 分級方法
+interval.QU = PDen %>% classIntervals(., 4, style="quantile")
+
+q <- cut(PDen, breaks= interval.QU$brks, include.lowest=T)
+clr <- as.character(factor(q, labels = my_color))
+plot(TWN, col = clr)
+
+interval.QU$brks %<>% round(digits = 1)
+lenTEXT = 
+c(paste0("<", interval.QU$brks[2]),    paste0(interval.QU$brks[2],"-",interval.QU$brks[3]),
+paste0(interval.QU$brks[3],"-",interval.QU$brks[4]),  
+paste0(interval.QU$brks[4],"-",interval.QU$brks[5]))
+
+legend(legend = paste0(lenTEXT), fill = my_color, title="Pop Density", "topright")
+
+
+```
+
+#### 3-3-2-4. Standard Deviation
+標準差分級
+```{r}
+interval.SD = PDen %>% classIntervals(., n=3, style="sd")
+
+q <- cut(PDen, breaks= interval.SD$brks, include.lowest=T)
+clr <- as.character(factor(q, labels = my_color[1:3]))
+plot(TWN, col = clr)
+
+interval.SD$brks %<>% round(digits = 1)
+lenTEXT = 
+c(paste0("<", interval.SD$brks[2]),    paste0(interval.SD$brks[2],"-",interval.SD$brks[3]),
+paste0(interval.SD$brks[3],"-",interval.SD$brks[4])
+)
+
+legend(legend = paste0(lenTEXT), fill = my_color, title="Pop Density", "topright")
+
+```
+
+classIntervals 所提供的 standard deviation 分組方法，是設定好組數之後，系統自動計算要 mean±幾個sd 才能符合指定的組數。以上面設定的 3 組來說，各個斷點其實是
+( `μ-5*σ`-`μ` )、( `μ`-`μ+5*σ`)、( `μ+5*σ`- `μ+10*σ`)
+這個以 5σ 為倍數的做法，只是為了達到指定組數為 3 的目的而設計，
+因此如果要讓組數是傳統比較常看到的 `μ±1*σ` 或 `μ±0.5*σ` 可以用我寫的以下的函式 getSD：
+```{r}
+getSD = function(data, nsd=1 ){
+  
+  u = mean(data)
+  SD = sd(data)
+  
+  a = c(seq(from = 0, to = 20, by=nsd))
+  
+  stdUP = vector()
+  for(i in 1:length(a)){
+    stdUP[i]= u +SD*a[i+1]
+    if( stdUP[i] > max(data) )
+      break;
+  }
+  
+  if (stdUP[length(stdUP)]>max(data)){  
+    stdUP = stdUP[1:(length(stdUP)-1)]
+  }else{
+    stdUP=stdUP
+  }
+  
+  n.upper = 1:length(stdUP)
+
+  stdDW = vector()
+  for(i in 1:length(a)){
+    stdDW[i]= u -SD*a[i+1]
+    if( stdDW[i] < min(data) )
+      break;
+  }
+  
+  if (stdDW[length(stdDW)] < min(data)){  
+    stdDW = sort(stdDW[1:(length(stdDW)-1)])
+  }else{
+    stdDW=sort(stdDW)
+  }
+  
+  n.lower = 1:length(stdDW)
+
+  std=c(stdDW, u, stdUP)
+
+  brks = paste0(c(-n.lower*nsd, 0,n.upper*nsd), "σ")
+  brks[brks=="0σ"]="μ"
+  return(list("std"=std, "brks"=brks))
+}  
+```
+在getSD 函式中，nsd參數 即指定 σ 以 nsd 為倍數和 μ 做加減，
+預設 nsd=1。
+但要注意的是，當 nsd 設定得太小，可能會造成組數過多，不利閱讀。
+在地圖學中建議**組數不要超過 7 組**。
+
+```{r}
+std = getSD(PDen, nsd=1.5)$std
+brks = getSD(PDen, nsd=1.5)$brks
+q <- cut(PDen, breaks= std, include.lowest=T)
+clr <- as.character(factor(q, 
+                labels = brewer.pal(n = length(std)-1, "YlOrRd")))
+plot(TWN, col = clr)
+
+lenTEXT = 
+c(paste0(brks[1], " - ", brks[2]),    
+  paste0(brks[2], " - ", brks[3]),    
+  paste0(brks[3], " - ", brks[4]),    
+  paste0(brks[4], " - ", brks[5]),
+  paste0(brks[5], " - ", brks[6]),
+  paste0(brks[6], " - ", brks[7]),
+  paste0(brks[7], " - ", brks[8]))
+
+
+legend(legend = paste0(lenTEXT), 
+       fill = brewer.pal(n = length(std)-1, "YlOrRd"), 
+       title="Pop Density", "topright")
+
+```
+
+#### 3-3-2-5. Natural Breaks (Jenks)
+```{r}
+interval.NB = PDen %>% classIntervals(., 4, style="jenks")
+
+q <- cut(PDen, breaks= interval.NB$brks, include.lowest=T)
+clr <- as.character(factor(q, labels = my_color))
+plot(TWN, col = clr)
+
+interval.NB$brks %<>% round(digits = 1)
+lenTEXT = 
+c(paste0("<", interval.NB$brks[2]),    paste0(interval.NB$brks[2],"-",interval.NB$brks[3]),
+paste0(interval.NB$brks[3],"-",interval.NB$brks[4]),  
+paste0(interval.NB$brks[4],"-",interval.NB$brks[5]))
+
+legend(legend = paste0(lenTEXT), fill = my_color, title="Pop Density", "topright")
+
+```
+
+### 3-3-3. 如何選擇適合的資料分級方法
+如何判斷適合該資料的分級方法呢？
+應該先判斷該資料的分佈狀態。
+```{r}
+hist(PDen)
+boxplot(PDen)
+```
+
+可以從 histrogram 資料分佈中看到， PDen 屬於右偏態，也就是大多資料集中在左側
+我們也可以從 boxplot 中看到，不管是下四分位數、中位數及上四分位數，
+都非常集中在數值較低的區域
+
+再來看看前述介紹幾種分級的方法的分組狀況：
+
+#### 3-3-3-1. Equal Interval
+```{r}
+plot(interval.EI, pal=my_color, main="Equal Interval", xlab="PDen", ylab="")
+```
+
+Equal Interval 適合用在例如叫為人所知的資料，例如成績 (1-100分)、台灣氣溫 (0-40℃)、百分比(0-100%)等等。
+但如果資料的分佈呈現 M 型分佈時，會導致某一塊區間出現空白。
+
+而以 PDen 台灣人口密度此一資料而言，Equal Interval 的分級方法對閱讀者而言，這些分組斷點是「不具有任何統計意義」的，
+因此雖然可以很好理解，我就是把人口密度從最小 0.929 到最大 2557 平均切成四份，但是對於解釋分組依據時，並沒有任何統計上的意義。
+
+#### 3-3-3-2. Quantile
+```{r}
+plot(interval.QU, pal=my_color, main="Quantile", xlab="PDen", ylab="")
+```
+
+Quantile 分級方法，是將數據排名第25%、50%、75%的數值設為分組斷點，
+也就是說每組中所擁有的資料數量是一樣的。例如 PDen 資料：
+```{r}
+interval.QU
+```
+
+可以看到每組中的資料數量都是 92 個。
+但是，它卻忽略了各組內的差異，例如最後一組 (80.7-2557) ，明明人口密度 80 人/km2 和 2557 人/km2 是超級巨大的差異，可是 Quantile 卻把他們編到為同一組了。
+
+#### 3-3-3-3. Standard Deviation
+```{r}
+plot(interval.SD, pal=my_color, main="Standard Deviation", xlab="PDen", ylab="")
+```
+
+Standard Deviation 適合用在偏向常態分布的資料，其斷點具有很漂亮的統計意義。
+
+
+#### 3-3-3-4. Natural Breaking
+```{r}
+plot(interval.NB, pal=my_color, main="Natural Breaks", xlab="PDen", ylab="")
+```
+
+Natural Break 所應用的就是最重要的分類原理：「讓組內差異最小」。
+
+所謂的「差異」其實就是透過 variance 來表示，簡單的說， Natural Break 方法即是計算各種分類方法的 variance 總和，而 variance 總和**最小**的那種分類方法，就是最佳分類結果。
+此方法計算量極大，詳細算法不在此贅述。
+
+在示範資料 PDen 人口密度中，可以看到 Natural Break 可以呈現比較漂亮的結果，不會太集中於切割較低的數值，在高數值的呈現上，也不會讓組內的差異過大，是比較好的呈現方法。
+
+
